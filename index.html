@@ -13,12 +13,13 @@
   /* Layout: barra lateral de control + mapa a pantalla; debajo, gráficos y tablas */
   :root {
     --bg: #f6f7f5; --panel: #ffffff; --fg: #1c2421; --muted: #5d6b66; --line: #dfe4e1; --accent: #1f6f5c;
-    --ok: #2e8b57; --lib: #2f6fd6; --rev: #e0a100; --sin: #d64545; --nv: #9aa5a1; --nd: #b48ad6;
+    --ok: #2e8b57; --lib: #2f6fd6; --rev: #e0a100; --sin: #d64545; --nv: #9aa5a1; --nd: #b48ad6; --sr: #cdd3d0;
     --sans: "IBM Plex Sans", system-ui, sans-serif; --mono: "IBM Plex Mono", ui-monospace, monospace;
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #111614; --panel: #19201d; --fg: #e8eeeb; --muted: #9fb0aa; --line: #2b3632; --accent: #5cc2a6; --nv: #6f7b77; color-scheme: dark; }
+    :root { --bg: #111614; --panel: #19201d; --fg: #e8eeeb; --muted: #9fb0aa; --line: #2b3632; --accent: #5cc2a6; --nv: #6f7b77; --sr: #3d4844; color-scheme: dark; }
+    .sw-sr { background: #3d4844; }
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); }
@@ -49,6 +50,7 @@
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
   .legend i.eje { height: 0; border-top: 2px dashed var(--muted); width: 18px; border-radius: 0; }
+  .sw-sr { display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--sr); vertical-align: -1px; }
   .legend i.abs { width: 8px; height: 8px; border-radius: 50%; background: #fff; border: 1.5px solid #1c2421; }
   .abs-lbl { font: 600 10px/1 var(--mono); color: #1c2421; white-space: nowrap; pointer-events: none; text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff; }
   .abs-lbl.km { font-size: 11.5px; color: #8a3b12; }
@@ -117,8 +119,8 @@
 
   <section class="grid2">
     <div class="card">
-      <h2>Longitud por corredor y estado</h2>
-      <p class="sub">Metros de cada corredor según la hoja de frentes de obra. Toque una barra para filtrar.</p>
+      <h2>Longitud contractual por corredor y estado</h2>
+      <p class="sub">Cada barra es la longitud contractual del corredor (cifra a la derecha). <span class="sw-sr"></span> Gris: longitud del contrato sin tramo registrado en la hoja. Toque una barra para filtrar.</p>
       <div class="bars" id="barsCorr"></div>
     </div>
     <div class="card">
@@ -204,10 +206,15 @@
     const h = R.findIndex((r) => limpio(r[2]).toUpperCase() === 'CORREDOR');
     if (h < 0) throw new Error('No se encontró la fila de encabezados');
     const ejeDe = Object.fromEntries(EJ.map((e) => [e.eje_id, e.geom]));
-    const out = []; let cur = null;
+    const out = []; let cur = null; const contrVivo = {};
     for (const r of R.slice(h + 1)) {
       const c = limpio(r[2]).toUpperCase().replace(/\s*-\s*/g, ' - ');
-      if (c) cur = c;
+      if (c) {
+        cur = c;
+        // «LONGITUD CONTRACTUAL» va en la primera fila de cada corredor (la fila de totales no tiene corredor)
+        const lc = num(r[15]), idc = IDS[cur] || cur.replace(/[^A-Z0-9]+/g, '_');
+        if (lc != null && lc > 0) contrVivo[idc] = (contrVivo[idc] || 0) + lc;
+      }
       const est = limpio(r[5]).toUpperCase().replace(/\s*-\s*/g, ' - ');
       if (!cur || !est) continue;
       const id = IDS[cur] || cur.replace(/[^A-Z0-9]+/g, '_');
@@ -222,7 +229,19 @@
       t.en_mapa = !!t.geom;
       out.push(t);
     }
+    out.contr = contrVivo;
     return out;
+  }
+  // Longitud contractual por corredor (columna «LONGITUD CONTRACTUAL» de la hoja). El corte guardado se reemplaza con la lectura en vivo.
+  // La de Los Puentes (LPA) cubre los subtramos A y B.
+  let CONTR = { T9: 11170, T8: 5375, MM: 4139, MOS: 550, T5: 6751.3, LPA: 2515.78 };
+  const regDe = (id) => TR.filter((t) => t.corredor_id === id && t.longitud_m != null).reduce((a, t) => a + Number(t.longitud_m), 0);
+  const grupoDe = (id) => (id === 'LPB' ? 'LPA' : id);
+  const contrGrupo = (g) => CONTR[g] ?? (g === 'LPA' ? regDe('LPA') + regDe('LPB') : regDe(g));
+  function contrDe(id) {
+    if (id === 'ALL') return [...new Set(TR.map((t) => grupoDe(t.corredor_id)))].reduce((a, g) => a + contrGrupo(g), 0);
+    if (id === 'LPA' || id === 'LPB') return regDe(id); // contrato conjunto A+B: cada subtramo se mide con lo registrado
+    return CONTR[id] ?? regDe(id);
   }
   const fuenteEl = document.getElementById('fuente');
   try {
@@ -231,6 +250,7 @@
     const vivo = leerHoja(await r.text());
     if (vivo.length < 5) throw new Error('La hoja llegó casi vacía');
     TR = vivo;
+    if (Object.keys(vivo.contr).length) CONTR = vivo.contr;
     const ahora = new Date().toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' });
     fuenteEl.textContent = `Estados leídos en vivo de la hoja «FRENTES DE OBRA» · ${ahora}`;
     fuenteEl.className = 'fuente vivo';
@@ -357,26 +377,30 @@
     const porEstado = Object.fromEntries(ORDEN.map((e) => [e, suma((t) => t.estado === e)]));
     const total = suma(() => true);
     const lib = porEstado['EJECUTADO'] + porEstado['LIBERADO EN EJECUCION'];
-    return { total, lib, pct: total ? Math.round((lib / total) * 100) : 0, sin: porEstado['SIN LIBERAR'], rev: porEstado['ENTREGADO - EN REVISION'], porEstado, pred: ps.length, predSin: ps.filter((p) => p.estado === 'SIN LIBERAR').length, ps };
+    const contr = contrDe(id), base = Math.max(contr, total);
+    const pc = (m) => (contr ? Math.round((m / contr) * 1000) / 10 : 0);
+    return { total, contr, base, sinReg: Math.max(0, contr - total), exceso: Math.max(0, total - contr), lib, pct: pc(lib), pc, sin: porEstado['SIN LIBERAR'], rev: porEstado['ENTREGADO - EN REVISION'], porEstado, pred: ps.length, predSin: ps.filter((p) => p.estado === 'SIN LIBERAR').length, ps };
   }
+  const SR = () => css.getPropertyValue('--sr').trim();
   function kpis() {
     const k = calc(SEL);
-    const meter = ORDEN.map((e) => `<i style="width:${k.total ? (k.porEstado[e] / k.total) * 100 : 0}%;background:${COL(e)}"></i>`).join('');
-    document.getElementById('lede').innerHTML = `En <b>${esc(NOM[SEL].toLowerCase() === 'todos los corredores' ? 'todos los corredores' : NOM[SEL])}</b>, el <b>${k.pct} %</b> de la longitud registrada está liberada o ejecutada y <b>${fm.format(k.sin)} m</b> siguen sin liberar.`;
+    const meter = ORDEN.map((e) => `<i style="width:${k.base ? (k.porEstado[e] / k.base) * 100 : 0}%;background:${COL(e)}"></i>`).join('') + (k.sinReg > 0.5 ? `<i title="Sin registrar en la hoja" style="width:${(k.sinReg / k.base) * 100}%;background:${SR()}"></i>` : '');
+    const nombre = SEL === 'ALL' ? 'todos los corredores' : NOM[SEL];
+    document.getElementById('lede').innerHTML = `En <b>${esc(nombre)}</b>, el <b>${f1.format(k.pct)} %</b> de la longitud contractual (${fm.format(k.contr)} m) está liberada o ejecutada; <b>${fm.format(k.sin)} m</b> siguen sin liberar` + (k.sinReg > 0.5 ? ` y <b>${fm.format(k.sinReg)} m</b> del contrato no tienen tramo registrado en la hoja.` : '.');
     document.getElementById('kpis').innerHTML = `
-      <div class="kpi"><div class="l">Longitud con estado en la hoja</div><div class="v">${fm.format(k.total)}<small>m</small></div><div class="meter">${meter}</div></div>
-      <div class="kpi"><div class="l">Liberada o ejecutada</div><div class="v" style="color:${COL('LIBERADO EN EJECUCION')}">${k.pct}<small>%</small></div><div class="s">${fm.format(k.lib)} m</div></div>
-      <div class="kpi"><div class="l">Sin liberar</div><div class="v" style="color:${COL('SIN LIBERAR')}">${fm.format(k.sin)}<small>m</small></div><div class="s">${fm.format(k.rev)} m entregados, en revisión</div></div>
+      <div class="kpi"><div class="l">Longitud contractual</div><div class="v">${fm.format(k.contr)}<small>m</small></div><div class="meter">${meter}</div><div class="s">Registrado en la hoja: ${fm.format(k.total)} m${k.sinReg > 0.5 ? ` · sin registrar: ${fm.format(k.sinReg)} m` : ''}${k.exceso > 0.5 ? ` · registrado de más: ${fm.format(k.exceso)} m` : ''}</div></div>
+      <div class="kpi"><div class="l">Liberada o ejecutada</div><div class="v" style="color:${COL('LIBERADO EN EJECUCION')}">${f1.format(k.pct)}<small>%</small></div><div class="s">${fm.format(k.lib)} m de ${fm.format(k.contr)} m contractuales</div></div>
+      <div class="kpi"><div class="l">Sin liberar</div><div class="v" style="color:${COL('SIN LIBERAR')}">${fm.format(k.sin)}<small>m</small></div><div class="s">${f1.format(k.pc(k.sin))} % del contrato · ${fm.format(k.rev)} m entregados, en revisión (${f1.format(k.pc(k.rev))} %)</div></div>
       <div class="kpi"><div class="l">Predios IGAC sobre el corredor</div><div class="v">${fm.format(k.pred)}</div><div class="s">${fm.format(k.predSin)} en tramos sin liberar</div></div>`;
   }
 
   // ---------- barras ----------
   function barras() {
     const ids = [...new Set(TR.map((t) => t.corredor_id))];
-    const datos = ids.map((id) => ({ id, ...calc(id) })).filter((d) => d.total > 0);
-    const max = Math.max(...datos.map((d) => d.total));
+    const datos = ids.map((id) => ({ id, ...calc(id) })).filter((d) => d.base > 0);
+    const max = Math.max(...datos.map((d) => d.base));
     const el = document.getElementById('barsCorr');
-    el.innerHTML = datos.map((d) => `<div class="bar ${d.id === SEL ? 'on' : ''}" data-id="${d.id}" title="${esc(NOM[d.id])}"><span class="n">${esc(NOM[d.id])}</span><span class="t" style="width:${(d.total / max) * 100}%">${ORDEN.map((e) => d.porEstado[e] ? `<i title="${ET[e]}: ${fm.format(d.porEstado[e])} m" style="width:${(d.porEstado[e] / d.total) * 100}%;background:${COL(e)}"></i>` : '').join('')}</span><span class="x">${fm.format(d.total)} m</span></div>`).join('');
+    el.innerHTML = datos.map((d) => `<div class="bar ${d.id === SEL ? 'on' : ''}" data-id="${d.id}" title="${esc(NOM[d.id])}: ${fm.format(d.total)} m registrados de ${fm.format(d.contr)} m contractuales (${f1.format(d.pc(d.lib))} % liberado o ejecutado)"><span class="n">${esc(NOM[d.id])}</span><span class="t" style="width:${(d.base / max) * 100}%">${ORDEN.map((e) => d.porEstado[e] ? `<i title="${ET[e]}: ${fm.format(d.porEstado[e])} m (${f1.format(d.pc(d.porEstado[e]))} %)" style="width:${(d.porEstado[e] / d.base) * 100}%;background:${COL(e)}"></i>` : '').join('')}${d.sinReg > 0.5 ? `<i title="Sin registrar en la hoja: ${fm.format(d.sinReg)} m" style="width:${(d.sinReg / d.base) * 100}%;background:${SR()}"></i>` : ''}</span><span class="x">${fm.format(d.contr)} m</span></div>`).join('');
     el.querySelectorAll('.bar').forEach((b) => b.addEventListener('click', () => setSel(b.dataset.id === SEL ? 'ALL' : b.dataset.id)));
     const k = calc(SEL), cnt = ORDEN.map((e) => ({ e, n: k.ps.filter((p) => p.estado === e).length })), mx = Math.max(1, ...cnt.map((c) => c.n));
     document.getElementById('subPred').textContent = `Predios del IGAC a 15 m o menos del eje · ${NOM[SEL]}.`;
