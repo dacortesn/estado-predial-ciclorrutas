@@ -13,7 +13,7 @@
   /* Layout: barra lateral de control + mapa a pantalla; debajo, gráficos y tablas */
   :root {
     --bg: #f6f7f5; --panel: #ffffff; --fg: #1c2421; --muted: #5d6b66; --line: #dfe4e1; --accent: #1f6f5c;
-    --ok: #2e8b57; --lib: #2f6fd6; --rev: #e0a100; --sin: #d64545; --nv: #9aa5a1; --nd: #b48ad6; --sr: #cdd3d0;
+    --ok: #2e8b57; --lib: #2f6fd6; --rev: #e0a100; --sin: #d64545; --nv: #9aa5a1; --nd: #b48ad6; --sr: #cdd3d0; --yo: #7a3db8;
     --sans: "IBM Plex Sans", system-ui, sans-serif; --mono: "IBM Plex Mono", ui-monospace, monospace;
     color-scheme: light;
   }
@@ -54,6 +54,17 @@
   .legend i.abs { width: 8px; height: 8px; border-radius: 50%; background: #fff; border: 1.5px solid #1c2421; }
   .abs-lbl { font: 600 10px/1 var(--mono); color: #1c2421; white-space: nowrap; pointer-events: none; text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff; }
   .abs-lbl.km { font-size: 11.5px; color: #8a3b12; }
+  .legend i.yo { border-radius: 50%; background: var(--yo); box-shadow: 0 0 0 3px color-mix(in srgb, var(--yo) 30%, transparent); }
+  #yoInfo { font-size: 13px; padding: 10px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--yo) 8%, var(--panel)); }
+  .loc-btn { width: 34px; height: 34px; display: grid; place-items: center; background: #fff; border: 0; cursor: pointer; color: #333; }
+  .loc-btn.on { color: #fff; background: var(--yo); }
+  .loc-btn svg { width: 18px; height: 18px; }
+  .loc-btn:focus-visible { outline: 2px solid var(--yo); outline-offset: 2px; }
+  @keyframes pulso { from { transform: scale(.6); opacity: .9 } to { transform: scale(2.2); opacity: 0 } }
+  .yo-marca { position: relative; }
+  .yo-marca i { position: absolute; inset: 0; border-radius: 50%; background: var(--yo); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+  .yo-marca b { position: absolute; inset: 0; border-radius: 50%; background: var(--yo); }
+  @media (prefers-reduced-motion: no-preference) { .yo-marca b { animation: pulso 1.8s ease-out infinite; } }
   #map { height: min(72vh, 680px); min-height: 380px; background: #dde3e0; }
   .note { font-size: 12px; color: var(--muted); padding: 8px 14px; border-top: 1px solid var(--line); }
   .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 16px 0; }
@@ -111,10 +122,11 @@
   <section class="mapcard">
     <div class="maphead">
       <div class="legend" id="legend"></div>
-      <div class="legend"><span><i class="eje"></i>Eje del proyecto (KML)</span><span><i class="abs"></i>Abscisado (acerque el mapa)</span></div>
+      <div class="legend"><span><i class="eje"></i>Eje del proyecto (KML)</span><span><i class="abs"></i>Abscisado (acerque el mapa)</span><span><i class="yo"></i>Mi ubicación</span></div>
     </div>
     <div id="map" role="region" aria-label="Mapa de predios por estado"></div>
-    <div class="note">Toque un predio o un tramo para ver su ficha. Desde el control de capas (arriba a la derecha) puede cambiar a imagen satelital o activar todos los predios del IGAC en vivo (visible desde zoom 17). Mosquera – Los Puentes A/B aún no tiene eje ubicado en el KML y solo aparece en las tablas.</div>
+    <div id="yoInfo" role="status" hidden></div>
+    <div class="note">Toque un predio o un tramo para ver su ficha. Con el botón de ubicación (debajo del zoom) el mapa lo sitúa y le dice la abscisa y el tramo más cercanos; la ubicación se calcula en su teléfono o computador y no se envía a ningún servidor. Desde el control de capas (arriba a la derecha) puede cambiar a imagen satelital o activar todos los predios del IGAC en vivo (visible desde zoom 17). Mosquera – Los Puentes A/B aún no tiene eje ubicado en el KML y solo aparece en las tablas.</div>
   </section>
 
   <section class="grid2">
@@ -352,6 +364,58 @@
   let pendiente = false;
   if (!map._loaded) map.setView([4.74, -74.2], 11);
   new ResizeObserver(() => { map.invalidateSize(); if (pendiente) encuadrar(); }).observe(document.getElementById('map'));
+
+  // ---------- mi ubicación: abscisa y tramo más cercanos ----------
+  const gYo = L.layerGroup().addTo(map);
+  const yoInfo = document.getElementById('yoInfo');
+  const CORR_DE_EJE = Object.fromEntries(Object.entries(EJE_DE).map(([c, e]) => [e, c]));
+  let watchId = null, primerFix = true, yoMarca = null, yoCirculo = null;
+  const LocCtl = L.Control.extend({
+    options: { position: 'topleft' },
+    onAdd() {
+      const div = L.DomUtil.create('div', 'leaflet-bar');
+      const b = L.DomUtil.create('button', 'loc-btn', div);
+      b.type = 'button'; b.title = 'Mostrar mi ubicación'; b.setAttribute('aria-label', 'Mostrar mi ubicación');
+      b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>';
+      L.DomEvent.disableClickPropagation(div);
+      b.addEventListener('click', () => (watchId == null ? iniciarUbicacion(b) : detenerUbicacion(b)));
+      return div;
+    },
+  });
+  map.addControl(new LocCtl());
+  function mostrarYo(html) { yoInfo.hidden = false; yoInfo.innerHTML = html; }
+  function iniciarUbicacion(b) {
+    if (!('geolocation' in navigator)) { mostrarYo('Este navegador no permite obtener la ubicación.'); return; }
+    b.classList.add('on'); primerFix = true; mostrarYo('Buscando su ubicación…');
+    watchId = navigator.geolocation.watchPosition(enUbicacion, (err) => {
+      const msg = err.code === 1 ? 'No se dio permiso para usar la ubicación. Actívelo en el navegador y vuelva a tocar el botón.' : err.code === 3 ? 'La ubicación tardó demasiado. Intente de nuevo al aire libre.' : 'No se pudo obtener la ubicación.';
+      mostrarYo(msg); detenerUbicacion(b, true);
+    }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+  }
+  function detenerUbicacion(b, conservarMensaje) {
+    if (watchId != null) navigator.geolocation.clearWatch(watchId);
+    watchId = null; b.classList.remove('on'); gYo.clearLayers(); yoMarca = yoCirculo = null;
+    if (!conservarMensaje) yoInfo.hidden = true;
+  }
+  function enUbicacion(pos) {
+    const { latitude: lat, longitude: lon, accuracy } = pos.coords;
+    const p = [lat, lon], yo = css.getPropertyValue('--yo').trim();
+    if (!yoMarca) {
+      yoCirculo = L.circle(p, { radius: accuracy, color: yo, fillColor: yo, weight: 1, fillOpacity: .08, interactive: false }).addTo(gYo);
+      yoMarca = L.marker(p, { icon: L.divIcon({ className: 'yo-marca', html: '<b></b><i></i>', iconSize: [16, 16] }), keyboard: false, title: 'Mi ubicación' }).addTo(gYo);
+    } else { yoMarca.setLatLng(p); yoCirculo.setLatLng(p).setRadius(accuracy); }
+    if (primerFix) { map.setView(p, Math.max(map.getZoom(), 17)); primerFix = false; }
+    // Punto del eje más cercano (aproximación plana, suficiente a escala de obra)
+    const K = Math.cos(lat * Math.PI / 180) * 111320, M = 110574;
+    let mejor = null;
+    EJ.forEach((e) => e.geom.forEach((v) => { if (v[2] == null) return; const d = Math.hypot((v[0] - lon) * K, (v[1] - lat) * M); if (!mejor || d < mejor.d) mejor = { d, eje: e.eje_id, nom: e.eje, v: v[2] }; }));
+    const prec = `precisión ±${fm.format(accuracy)} m`;
+    if (!mejor || mejor.d > 2000) { mostrarYo(`<b>Su ubicación</b> · ${prec}. Está a más de 2 km de los ejes del proyecto.`); return; }
+    const corr = CORR_DE_EJE[mejor.eje];
+    const t = corr && TR.find((t) => t.corredor_id === corr && t.abscisa_inicial != null && t.abscisa_final != null && mejor.v >= t.abscisa_inicial && mejor.v <= t.abscisa_final);
+    mostrarYo(`<b>Está a ${fm.format(mejor.d)} m de ${esc(NOM[corr] || mejor.nom)}</b>, cerca de la abscisa <b>${kfmt(mejor.v)}</b> · ${prec}.` +
+      (t ? `<br>Tramo de la hoja: ${pill(t.estado)} ${esc(t.tramo)}${t.rt ? ' · RT ' + esc(t.rt) : ''}${t.nombre ? ' · ' + esc(t.nombre) : ''}` : '<br>Esa abscisa no tiene un tramo registrado en la hoja de frentes de obra.'));
+  }
 
   // Capa en vivo del IGAC (opcional)
   const IGAC = 'https://sigi.igac.gov.co/habilitacion/rest/services/sinic/SINIC_DA/FeatureServer/3/query';
